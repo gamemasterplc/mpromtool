@@ -117,7 +117,7 @@ void PrintHelp(char* prog_name)
     std::cout << "Usage: " << prog_name << " [flags] args" << std::endl;
     std::cout << std::endl;
     std::cout << "-h/--help: Display this page" << std::endl;
-    std::cout << "-d/--desc: Path to game description files (default .)" << std::endl;
+    std::cout << "-d/--desc: Path to game description file directory (default gameconfig)" << std::endl;
     std::cout << "-b/--build: Build a new ROM" << std::endl;
     std::cout << "-a/--base: Path to base ROM" << std::endl;
 }
@@ -1846,7 +1846,7 @@ int main(int argc, char **argv)
 {
     bool build_rom = false;
     size_t last_opt = 1;
-    desc_path = "";
+    desc_path = "gameconfig";
     for (int i = 1; i < argc; i++) {
         std::string option = argv[i];
         if (option[0] != '-') {
