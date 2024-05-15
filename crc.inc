@@ -186,13 +186,18 @@ void fix_crc (const char *filename)
 		}
 		
 		if (crc[0] == BYTES2LONG(&buffer[N64_CRC1]))
-		{}	//printf("(Good)\n");
+		{
+		
+		}
 		else
+		{
 			//printf("\nFixing CRC 1...");
 			fseek(fin,N64_CRC1,SEEK_SET);
 			for(i=0;i<4;i++)
 			{fputc(CRC1[i],fin);}
 			//printf(" Done.");
+		}
+			
 
 		if (crc[1] == BYTES2LONG(&buffer[N64_CRC2]))
 		{
