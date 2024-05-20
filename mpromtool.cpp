@@ -13,6 +13,8 @@
 #include <algorithm>
 #include "tinyxml2.h"
 
+#define BIT_ALIGN(V, N) (V + ((N - (V % N)) % N))
+
 struct FileData {
     uint16_t dir;
     uint16_t file;
@@ -53,11 +55,50 @@ struct BgAnimDataSegment {
     std::vector<std::vector<uint8_t>> bganim_data;
 };
 
+
+struct SoundBankSegment
+{
+   std::string segname;
+   uint32_t romaddr = 0;
+   uint32_t size = 0;
+   std::vector<uint8_t> data;
+};
+
+struct WaveTableSegment
+{
+   std::string segname;
+   uint32_t romaddr = 0;
+   uint32_t size = 0;
+   std::vector<uint8_t> data;
+};
+
+struct SequenceSegment
+{
+   std::string segname;
+   uint8_t unk0 = 0;    // TODO: new_format
+   uint8_t unk1 = 0;    // TODO: new_format
+   uint8_t bank = 0;
+   int16_t id = -1;      // Some entries are copies
+   uint32_t romaddr = 0;
+   uint32_t size = 0;
+   std::vector<uint8_t> data;
+};
+
+struct LibAudioSegment {
+   std::string segname;
+   uint32_t romaddr = 0;
+   SoundBankSegment soundbankseg;
+   WaveTableSegment wavetableseg;
+   std::vector<SequenceSegment> seqsegs;
+};
+
 struct MusBankSegment {
     std::string segname;
     uint32_t romaddr = 0;
     bool new_format = false;
-    std::vector<uint8_t> data;
+    std::vector<uint8_t> revision;
+    std::vector<uint8_t> unkdata; // TODO: new_format
+    LibAudioSegment libaudioseg;
 };
 
 struct SfxBankSegment {
@@ -372,6 +413,16 @@ void ParseMusBankGameDesc(tinyxml2::XMLElement* element)
     musbank.segname = segname_value;
     musbank.romaddr = GetSegNameValue(musbank.segname);
     musbank.new_format = (game_id == "mp2" || game_id == "mp3");
+    if (musbank.new_format) {
+       musbank.revision.push_back(0x4D); // M
+       musbank.revision.push_back(0x42); // B
+       musbank.revision.push_back(0x46); // F
+       musbank.revision.push_back(0x30); // 0
+    }
+    else {
+       musbank.revision.push_back(0x53); // S
+       musbank.revision.push_back(0x32); // 1/2
+    }
     gamedata.musbanks.push_back(musbank);
 }
 
@@ -691,26 +742,72 @@ void ParseBgAnimDataRom()
     }
 }
 
+void LibAudioDataRom(LibAudioSegment& libaudioseg) {
+   // Get Sound Bank
+   libaudioseg.soundbankseg.data.resize(libaudioseg.soundbankseg.size);
+   memcpy(&libaudioseg.soundbankseg.data[0], &rom_data[libaudioseg.soundbankseg.romaddr], libaudioseg.soundbankseg.size);
+
+   // Get Wave Table
+   libaudioseg.wavetableseg.data.resize(libaudioseg.wavetableseg.size);
+   memcpy(&libaudioseg.wavetableseg.data[0], &rom_data[libaudioseg.wavetableseg.romaddr], libaudioseg.wavetableseg.size);
+
+   // Get Sequences
+   for (auto& seqseg : libaudioseg.seqsegs) {
+      seqseg.data.resize(seqseg.size);
+      memcpy(&seqseg.data[0], &rom_data[seqseg.romaddr], seqseg.size);
+   }
+
+
+}
+
 void ParseMusBankDataRom(MusBankSegment &musbank)
 {
     size_t romaddr_base = musbank.romaddr;
     if (musbank.new_format) {
+        musbank.revision.push_back(0x4D); // M
+        musbank.revision.push_back(0x42); // B
+        musbank.revision.push_back(0x46); // F
+        musbank.revision.push_back(0x30); // 0
         uint32_t count = ReadRom32(romaddr_base + 4);
         uint32_t tbl_record_ofs = romaddr_base + 64 + (count * 16) + 8;
-        size_t tbl_size = ReadRom32(tbl_record_ofs);
-        size_t tbl_ofs = ReadRom32(tbl_record_ofs + 4);
-        size_t total_size = tbl_size + tbl_ofs;
-        musbank.data.resize(total_size);
-        memcpy(&musbank.data[0], &rom_data[romaddr_base], total_size);
+        uint32_t snd_record_ofs = romaddr_base + 64 + (count * 16);
+        musbank.libaudioseg.seqsegs.resize(count);
+        uint32_t header_size = (count * 16) + 80;
+
+        for (uint32_t i = 0; i < count; i++) {
+           uint32_t seq_offset = ReadRom32(romaddr_base + 72 + i * 16);
+           musbank.libaudioseg.seqsegs[i].romaddr = romaddr_base + seq_offset;
+           musbank.libaudioseg.seqsegs[i].size = ReadRom32(romaddr_base + 76 + i * 16);
+           musbank.libaudioseg.seqsegs[i].unk0 = ReadRom8(romaddr_base + 64 + i * 16);
+           musbank.libaudioseg.seqsegs[i].unk1 = ReadRom8(romaddr_base + 65 + i * 16);
+           musbank.libaudioseg.seqsegs[i].bank = ReadRom8(romaddr_base + 66 + i * 16);
+        }
+        musbank.libaudioseg.soundbankseg.romaddr = romaddr_base + ReadRom32(snd_record_ofs);
+        musbank.libaudioseg.soundbankseg.size = ReadRom32(snd_record_ofs + 4);
+        musbank.libaudioseg.wavetableseg.romaddr = romaddr_base + ReadRom32(tbl_record_ofs);
+        musbank.libaudioseg.wavetableseg.size = ReadRom32(tbl_record_ofs + 4);
+        musbank.unkdata.resize(0x40 - 0x8);
+        memcpy(&musbank.unkdata[0], &rom_data[romaddr_base + 0x8], 0x40 - 0x8); // TODO: Parse this global music data
     } else {
+        musbank.revision.push_back(0x53);      // S
+        musbank.revision.push_back(0x32);      // 1/2
         uint16_t count = ReadRom16(romaddr_base + 2);
-        uint32_t mus_last_hdr = romaddr_base + 4 + ((count - 1) * 8);
-        size_t last_mus_size = ReadRom32(mus_last_hdr);
-        size_t last_mus_ofs = ReadRom32(mus_last_hdr+4);
-        size_t size = last_mus_ofs + last_mus_size;
-        musbank.data.resize(size);
-        memcpy(&musbank.data[0], &rom_data[romaddr_base], size);
+        uint32_t musheader_size = count * 24 + 4;
+        musheader_size = BIT_ALIGN(musheader_size, 16); // 'FF' padding
+
+        // Get libaudio segments romaddr starts and sizes
+        musbank.libaudioseg.soundbankseg.romaddr = romaddr_base + musheader_size;
+        musbank.libaudioseg.wavetableseg.romaddr = romaddr_base + ReadRom32(romaddr_base + count * 8 + 16);
+        musbank.libaudioseg.soundbankseg.size = musbank.libaudioseg.wavetableseg.romaddr - musbank.libaudioseg.soundbankseg.romaddr;
+        musbank.libaudioseg.seqsegs.resize(count);
+        for (uint32_t i = 0; i < count; i++) {
+           musbank.libaudioseg.seqsegs[i].romaddr = romaddr_base + ReadRom32(romaddr_base + 8*i + 4);
+           musbank.libaudioseg.seqsegs[i].size    = ReadRom32(romaddr_base + 8 * i + 8);
+           musbank.libaudioseg.seqsegs[i].bank    = ReadRom8(romaddr_base + count * 8 + 4 + i * 16);
+        }
+        musbank.libaudioseg.wavetableseg.size = musbank.libaudioseg.seqsegs[0].romaddr - musbank.libaudioseg.wavetableseg.romaddr;
     }
+    LibAudioDataRom(musbank.libaudioseg);
 }
 
 void ParseSfxBankDataRom(SfxBankSegment& sfxbank)
@@ -948,19 +1045,91 @@ void DumpBgAnimData(tinyxml2::XMLDocument& document, tinyxml2::XMLElement* root,
 
 void DumpMusBank(tinyxml2::XMLDocument& document, tinyxml2::XMLElement* root, std::string basedir, size_t index)
 {
+
+    /* Save XML / Bins */
     MusBankSegment& musbank = gamedata.musbanks[index];
-    std::string outfile = basedir + "/" + musbank.segname + ".bin";
+    std::string dir = basedir + "/" + musbank.segname;
+    std::string seqbasedir = dir + "/seqs";
+    MakeDirectory(basedir);
+    MakeDirectory(dir);
+    MakeDirectory(seqbasedir);
     tinyxml2::XMLElement* element = document.NewElement("musbank");
-    element->SetAttribute("path", outfile.c_str());
+    std::string musbankfile = dir + "/musbank.xml";
+    std::string soundbankfile = dir + "/soundbank.ctl";
+    std::string wavetablefile = dir + "/wavetable.tbl";
     element->SetAttribute("segindex", index);
     element->SetAttribute("new_format", musbank.new_format);
-    FILE* out_file = fopen(outfile.c_str(), "wb");
+
+    tinyxml2::XMLElement* soundbankele = element->InsertNewChildElement("soundbank");
+    soundbankele->SetAttribute("path", soundbankfile.c_str());
+    element->InsertEndChild(soundbankele);
+    FILE* out_file = fopen(soundbankfile.c_str(), "wb");
     if (!out_file) {
-        std::cout << "Failed to open " << outfile << " for writing." << std::endl;
-        exit(1);
+       std::cout << "Failed to open " << soundbankfile << " for writing." << std::endl;
+       exit(1);
     }
-    fwrite(&musbank.data[0], 1, musbank.data.size(), out_file);
+    fwrite(&musbank.libaudioseg.soundbankseg.data[0], 1, musbank.libaudioseg.soundbankseg.data.size(), out_file);
     fclose(out_file);
+
+    tinyxml2::XMLElement* wavetableele = element->InsertNewChildElement("wavetable");
+    wavetableele->SetAttribute("path", wavetablefile.c_str());
+    element->InsertEndChild(wavetableele);
+    out_file = fopen(wavetablefile.c_str(), "wb");
+    if (!out_file) {
+       std::cout << "Failed to open " << wavetablefile << " for writing." << std::endl;
+       exit(1);
+    }
+    fwrite(&musbank.libaudioseg.wavetableseg.data[0], 1, musbank.libaudioseg.wavetableseg.data.size(), out_file);
+    fclose(out_file);
+
+    tinyxml2::XMLElement* seqbankele = element->InsertNewChildElement("seqbank");
+    std::map<uint32_t, uint32_t> seqmap;
+    uint32_t i = 0;
+    for (auto& seq : musbank.libaudioseg.seqsegs) {
+       uint32_t id = i;
+       bool write = false;
+       if (seqmap.find(seq.romaddr) == seqmap.end()) {
+          seqmap[seq.romaddr] = i++;
+          write = true;
+       }
+       else {
+          id = seqmap[seq.romaddr];
+       }
+
+       std::string seqfile = seqbasedir + "/" + std::to_string(id) + ".seq";
+       tinyxml2::XMLElement* seqelement = seqbankele->InsertNewChildElement("seq");
+       seqelement->SetAttribute("path", seqfile.c_str());
+       seqelement->SetAttribute("bank", seq.bank);
+       if (musbank.new_format) {
+          seqelement->SetAttribute("unk0", seq.unk0);
+          seqelement->SetAttribute("unk1", seq.unk1);
+       }
+       seqbankele->InsertEndChild(seqelement);
+
+       if (write) {
+          out_file = fopen(seqfile.c_str(), "wb");
+          if (!out_file) {
+             std::cout << "Failed to open " << seqfile << " for writing." << std::endl;
+             exit(1);
+          }
+          fwrite(&seq.data[0], 1, seq.data.size(), out_file);
+          fclose(out_file);
+       }
+    }
+    element->InsertEndChild(seqbankele);
+
+    // TODO: Remove and parse this information for new_format
+    if (musbank.new_format) {
+       std::string unkfile = dir + "/unkdata.bin";
+       element->SetAttribute("unkdata_path", unkfile.c_str());
+       out_file = fopen(unkfile.c_str(), "wb");
+       if (!out_file) {
+          std::cout << "Failed to open " << unkfile << " for writing." << std::endl;
+          exit(1);
+       }
+       fwrite(&musbank.unkdata[0], 1, musbank.unkdata.size(), out_file);
+       fclose(out_file);
+    }
 
     root->InsertEndChild(element);
 }
@@ -1021,7 +1190,7 @@ void DumpGameData(std::string output)
         DumpBgAnimData(document, root, output + "/bganimdata");
     }
     for (size_t i = 0; i < gamedata.musbanks.size(); i++) {
-        DumpMusBank(document, root, output, i);
+        DumpMusBank(document, root, output + "/musdata", i);
     }
     for (size_t i = 0; i < gamedata.sfxbanks.size(); i++) {
         DumpSfxBank(document, root, output, i);
@@ -1136,11 +1305,57 @@ void ParseMusBank(tinyxml2::XMLElement* element)
     int seg_index;
     XMLCheck(element->QueryAttribute("segindex", &seg_index));
     XMLCheck(element->QueryAttribute("new_format", &new_format));
+    tinyxml2::XMLElement* soundbankele = element->FirstChildElement("soundbank");
+    tinyxml2::XMLElement* wavetableele = element->FirstChildElement("wavetable");
+    tinyxml2::XMLElement* seqbankele = element->FirstChildElement("seqbank");
     MusBankSegment& seg = gamedata.musbanks[seg_index];
     seg.new_format = new_format;
-    const char* path;
-    XMLCheck(element->QueryAttribute("path", &path));
-    ReadWholeFile(path, seg.data);
+
+    // TODO change parsing
+    const char* soundbankpath;
+    XMLCheck(soundbankele->QueryAttribute("path", &soundbankpath));
+    ReadWholeFile(soundbankpath, seg.libaudioseg.soundbankseg.data);
+
+    const char* wavetablepath;
+    XMLCheck(wavetableele->QueryAttribute("path", &wavetablepath));
+    ReadWholeFile(wavetablepath, seg.libaudioseg.wavetableseg.data);
+
+    uint32_t count = seqbankele->ChildElementCount();
+    seg.libaudioseg.seqsegs.resize(count);
+
+    uint32_t i = 0;
+    tinyxml2::XMLElement* seqele = seqbankele->FirstChildElement("seq");
+    std::map<std::string, uint32_t> seqmap;
+    while (seqele) {
+       const char* seqpath;
+       int bank;
+       SequenceSegment& seqseg = seg.libaudioseg.seqsegs[i];
+       XMLCheck(seqele->QueryAttribute("path", &seqpath));
+       XMLCheck(seqele->QueryIntAttribute("bank", &bank));
+       if (seg.new_format) {
+          int unk0, unk1;
+          XMLCheck(seqele->QueryIntAttribute("unk0", &unk0));
+          XMLCheck(seqele->QueryIntAttribute("unk1", &unk1));
+          seqseg.unk0 = unk0;
+          seqseg.unk1 = unk1;
+       }
+       seqseg.bank = bank;
+       if (seqmap.find(seqpath) == seqmap.end()) {
+          ReadWholeFile(seqpath, seqseg.data);
+          seqmap[seqpath] = i; // current index
+       }
+       else {
+          seqseg.id = seqmap[seqpath]; // id with copy data
+       }
+       seqele = seqele->NextSiblingElement("seq");
+       i++;
+    }
+
+    if (seg.new_format) {
+       const char* unkdatapath;
+       XMLCheck(element->QueryAttribute("unkdata_path", &unkdatapath));
+       ReadWholeFile(unkdatapath, seg.unkdata);
+    }
 }
 
 void ParseSfxBank(tinyxml2::XMLElement* element)
@@ -1255,6 +1470,13 @@ void WriteAlign(FILE* file, size_t align)
     while ((ftell(file) % align) != 0) {
         WriteU8(file, 0);
     }
+}
+
+void WriteAlignFF(FILE* file, size_t align)
+{
+   while ((ftell(file) % align) != 0) {
+      WriteU8(file, 0xFF);
+   }
 }
 
 #define N 1024   /* size of ring buffer */   
@@ -1753,7 +1975,88 @@ void WriteMusBankRom(FILE* file, MusBankSegment& musbank)
 {
     musbank.romaddr = ftell(file);
     SetSegNameValue(musbank.segname, musbank.romaddr, false);
-    WriteRawBuffer(file, musbank.data);
+    
+    // Generate musbank header
+    uint32_t count = musbank.libaudioseg.seqsegs.size();
+    uint32_t soundbanksize = musbank.libaudioseg.soundbankseg.data.size();
+
+    WriteRawBuffer(file, musbank.revision);
+    if (musbank.new_format) {
+       WriteU32(file, count);
+       WriteRawBuffer(file, musbank.unkdata);
+
+       uint32_t headersize = 80 + 16 * count;
+       uint32_t offset = headersize;
+       for (auto& seqseg : musbank.libaudioseg.seqsegs) {
+          uint32_t seqsize = seqseg.data.size();
+          WriteU8(file, seqseg.unk0);
+          WriteU8(file, seqseg.unk1);
+          WriteU8(file, seqseg.bank);
+          WriteU8(file, 0);
+          WriteU32(file, 0x07000000); // unused
+          if (seqseg.id == -1) { // original data
+             seqseg.romaddr = offset;
+             WriteU32(file, offset);
+             WriteU32(file, seqseg.data.size());
+             offset += seqseg.data.size();
+             offset = BIT_ALIGN(offset, 8);
+          }
+          else {
+             // Write copy sequence data
+             auto& copyseqseg = musbank.libaudioseg.seqsegs[seqseg.id];
+             WriteU32(file, copyseqseg.romaddr);
+             WriteU32(file, copyseqseg.data.size());
+          }
+       }
+
+       WriteU32(file, offset);
+       WriteU32(file, soundbanksize);
+       WriteU32(file, offset + soundbanksize);
+       WriteU32(file, musbank.libaudioseg.wavetableseg.data.size());
+    }
+    else {
+       WriteU16(file, count);
+       uint32_t headersize = 4 + count * 24;
+       headersize = BIT_ALIGN(headersize, 16); // padding
+       uint32_t offset = soundbanksize + headersize + musbank.libaudioseg.wavetableseg.data.size();
+       for (auto& seqseg : musbank.libaudioseg.seqsegs) {
+          uint32_t seqsize = seqseg.data.size();
+          WriteU32(file, offset);
+          WriteU32(file, seqsize);
+          seqsize = BIT_ALIGN(seqsize, 8); // Don't forget about the padding
+          offset += seqsize;
+       }
+       for (auto& seqseg : musbank.libaudioseg.seqsegs) {
+          uint32_t seqsize = seqseg.data.size();
+          WriteU8(file, seqseg.bank);
+          WriteU8(file, 0x7F); // unused
+          WriteU8(file, 0xFF); // unused
+          WriteU8(file, 0xFF); // unused
+
+          WriteU32(file, headersize);
+          WriteU32(file, soundbanksize);
+          WriteU32(file, headersize + soundbanksize);
+       }
+    }
+    WriteAlignFF(file, 16);
+
+    // midi order is first for new_format
+    if (musbank.new_format) {
+       for (auto& seq : musbank.libaudioseg.seqsegs) {
+          if (seq.id == -1) {
+             WriteRawBuffer(file, seq.data);
+             WriteAlign(file, 8);
+          }
+       }
+    }
+    WriteRawBuffer(file, musbank.libaudioseg.soundbankseg.data);
+    WriteRawBuffer(file, musbank.libaudioseg.wavetableseg.data);
+    if (!musbank.new_format) {
+       for (auto& seq : musbank.libaudioseg.seqsegs) {
+          WriteRawBuffer(file, seq.data);
+          WriteAlign(file, 8); // Already aligned in mp1, this is for custom data
+       }
+    }
     WriteAlign(file, 16);
     SetSegNameValue(musbank.segname, ftell(file), true);
 }
