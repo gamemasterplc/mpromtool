@@ -198,6 +198,7 @@
 		<segref segname="hvqdata" hi="0x2A090A" lo="0x2A0912"></segref>
 		<segref segname="hvqdata" hi="0x2A51A2" lo="0x2A51AA"></segref>
 		<segref segname="hvqdata" hi="0x2B70D6" lo="0x2B70DE"></segref>
+		<segref segname="hvqdata" hi="0x2BA16E" lo="0x2BA176"></segref>
 		<segref segname="hvqdata" hi="0x2FD79A" lo="0x2FD7A2"></segref>
 		<segref segname="hvqdata" hi="0x3002B6" lo="0x3002BE"></segref>
 		<segref segname="hvqdata" hi="0x3013AE" lo="0x3013B6"></segref>
